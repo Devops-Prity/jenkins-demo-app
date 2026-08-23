@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'IMAGE_TAG', defaultValue: 'latest',
+               description: 'Which CI build number (image tag) to deploy')
+    }
+
+    environment {
+        DOCKERHUB_USER = "prity987"
+        IMAGE_NAME     = "${DOCKERHUB_USER}/jenkins-demo-app"
+        CONTAINER_NAME = "demo-app"
+        APP_PORT       = "8081"
+    }
+
+    stages {
+
+        stage('Pull Image from Docker Hub') {
+            steps {
+                // The image comes from the registry, not the local cache.
+                // This is what makes deployment to ANY server possible.
+                sh "docker pull ${IMAGE_NAME}:${params.IMAGE_TAG}"
+            }
+        }
+
+        stage('Stop Old Container') {
+            steps {
+                sh """
+                    docker stop ${CONTAINER_NAME} || true
+                    docker rm   ${CONTAINER_NAME} || true
+                """
+            }
+        }
+
+        stage('Deploy New Container') {
+            steps {
+                sh """
+                    docker run -d \
+                      --name ${CONTAINER_NAME} \
+                      --restart unless-stopped \
+                      --memory=384m \
+                      -p ${APP_PORT}:8081 \
+                      ${IMAGE_NAME}:${params.IMAGE_TAG}
+                """
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                // This shell runs INSIDE the Jenkins container, where
+                // 'localhost' is Jenkins itself, not the EC2 host.
+                // So we ask Docker for the app container's IP and curl that.
+                sh '''
+                    sleep 30
+                    APP_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $CONTAINER_NAME)
+                    curl -f http://$APP_IP:$APP_PORT/health
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployed ${IMAGE_NAME}:${params.IMAGE_TAG} from Docker Hub"
+        }
+        failure {
+            echo "Deployment failed - redeploy a known-good tag."
+        }
+    }
+}
